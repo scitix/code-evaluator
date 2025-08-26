@@ -60,7 +60,7 @@ def _unsafe_execute(code: str) -> tuple[bool, str]:
                 exec(code, exec_globals)
             return True, ""
         except BaseException as e:
-            return False, f"failed: {e}"
+            return False, f"failed: [{type(e).__name__}] {e}"
         finally:
             # Needed for cleaning up.
             shutil.rmtree = rmtree
