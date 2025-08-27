@@ -1,3 +1,4 @@
+import asyncio
 import contextlib
 import faulthandler
 import io
@@ -7,27 +8,33 @@ import platform
 import tempfile
 
 
-def exec_in_process(code: str, timeout: float) -> tuple[bool, str]:
-    queue = multiprocessing.Queue()
-    process = multiprocessing.Process(target=_execute_in_process, args=(code, queue))
-    process.start()
-    process.join(timeout=timeout)
+async def execute_code(code: str, timeout: float) -> tuple[bool, str]:
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(_run_in_subprocess, code), timeout=timeout
+        )
+    except asyncio.TimeoutError:
+        return False, "failed: timeout"
+    except Exception as e:
+        return False, f"failed: [{type(e).__name__}] {e}"
 
-    if process.is_alive():
-        process.terminate()
-        process.join()
-        return False, "failed: timed out"
 
-    if not queue.empty():
-        return queue.get()
+def _run_in_subprocess(code: str) -> tuple[bool, str]:
+    def _target(q, code):
+        try:
+            ok, msg = _unsafe_execute(code)
+            q.put((ok, msg))
+        except Exception as e:
+            q.put((False, f"failed: [{type(e).__name__}] {e}"))
+
+    q = multiprocessing.Queue()
+    p = multiprocessing.Process(target=_target, args=(q, code))
+    p.start()
+    p.join()
+    if not q.empty():
+        return q.get()
     else:
-        # if the process is killed before putting a result
-        return False, "failed: no result"
-
-
-def _execute_in_process(code: str, queue: multiprocessing.Queue):
-    result = _unsafe_execute(code)
-    queue.put(result)
+        return False, "failed: no result from subprocess"
 
 
 # adapted from https://github.com/openai/human-eval/blob/6d43fb980f9fee3c892a914eda09951f772ad10d/human_eval/execution.py
