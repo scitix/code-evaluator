@@ -7,34 +7,39 @@ import os
 import platform
 import tempfile
 
-
-async def execute_code(code: str, timeout: float) -> tuple[bool, str]:
-    try:
-        return await asyncio.wait_for(
-            asyncio.to_thread(_run_in_subprocess, code), timeout=timeout
-        )
-    except asyncio.TimeoutError:
-        return False, "failed: timeout"
-    except Exception as e:
-        return False, f"failed: [{type(e).__name__}] {e}"
+from .utils import kill_proc
 
 
-def _run_in_subprocess(code: str) -> tuple[bool, str]:
-    def _target(q, code):
-        try:
-            ok, msg = _unsafe_execute(code)
-            q.put((ok, msg))
-        except Exception as e:
-            q.put((False, f"failed: [{type(e).__name__}] {e}"))
-
-    q = multiprocessing.Queue()
-    p = multiprocessing.Process(target=_target, args=(q, code))
+async def execute_code(code: str, timeout: float = 3.0) -> tuple[bool, str]:
+    ctx = multiprocessing.get_context("spawn")
+    q = ctx.SimpleQueue()
+    p = ctx.Process(target=_subprocess_target, args=(q, code))
     p.start()
-    p.join()
-    if not q.empty():
-        return q.get()
-    else:
-        return False, "failed: no result from subprocess"
+    try:
+        ok, msg = await asyncio.wait_for(asyncio.to_thread(q.get), timeout=timeout)
+        return ok, msg
+    except asyncio.TimeoutError:
+        if p.is_alive():
+            reason = f"subprocess timeout: {timeout}s"
+        else:
+            reason = "no result from subprocess"
+    except Exception as e:
+        reason = f"[{type(e).__name__}] {e}"
+    finally:
+        kill_proc(p)
+        try:
+            q.close()
+        except Exception:
+            pass
+    return False, f"failed: {reason}"
+
+
+def _subprocess_target(q: multiprocessing.Queue, code: str):
+    try:
+        ok, msg = _unsafe_execute(code)
+        q.put((ok, msg))
+    except Exception as e:
+        q.put((False, f"failed: [{type(e).__name__}] {e}"))
 
 
 # adapted from https://github.com/openai/human-eval/blob/6d43fb980f9fee3c892a914eda09951f772ad10d/human_eval/execution.py

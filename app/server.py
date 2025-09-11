@@ -8,7 +8,8 @@ from loguru import logger
 from pydantic import BaseModel
 
 from .exec_js import execute_code as exec_js
-from .exec_py import execute_code as exec_py
+from .exec_py_code import execute_code as exec_py_code
+from .exec_py_test import execute_test as exec_py_test
 from .exec_ts import execute_code as exec_ts
 
 # logger
@@ -42,11 +43,17 @@ async def check_health():
     return BasicResponse(status=True, msg="healthy")
 
 
+class LiveCodeBenchTest(BaseModel):
+    inputs: list[str]
+    outputs: list[str]
+    fn_name: str | None = None
+
+
 class Sample(BaseModel):
     uuid: str
     source: str
     code: str
-    test: str | None = None
+    test: LiveCodeBenchTest | None = None
     lang: str = "python"
     kwargs: dict[str, Any] | None = None
 
@@ -54,14 +61,12 @@ class Sample(BaseModel):
 @app.post("/evaluations")
 async def evaluate(sample: Sample):
     if sample.source == "human-eval":
-        logger.info(
-            f"evaluating sample '{sample.uuid}' from '{sample.source}', language: {sample.lang}"
-        )
+        # 'human-eval' directly use the code
         logger.debug(f"code to exec:\n{sample.code}")
 
         CODE_EXECUTOR_MAP = {
             "javascript": (exec_js, 3.0),
-            "python": (exec_py, 3.0),
+            "python": (exec_py_code, 3.0),
             "typescript": (exec_ts, 5.0),
         }
         if sample.lang in CODE_EXECUTOR_MAP:
@@ -69,12 +74,37 @@ async def evaluate(sample: Sample):
             ok, msg = await fn(code=sample.code, timeout=timeout)
         else:
             ok, msg = False, f"not supported language: {sample.lang}"
-        logger.debug(f"status: {ok}, msg: {msg}")
 
+        logger.info(
+            f"evaluate sample '{sample.uuid}' from '{sample.source}', "
+            f"language: {sample.lang}, kwargs: {sample.kwargs}, "
+            f"status: {ok}, msg: {msg}"
+        )
+        return BasicResponse(status=ok, msg=msg)
+    elif sample.source == "livecodebench":
+        # 'livecodebench' use tests to eval the code
+        logger.debug(f"code to exec:\n{sample.code}")
+
+        if sample.lang != "python":
+            return BasicResponse(
+                status=False, msg=f"not supported language: {sample.lang}"
+            )
+        ok, msg = await exec_py_test(
+            code=sample.code,
+            inputs=sample.test.inputs,
+            expect_outputs=sample.test.outputs,
+            fn_name=sample.test.fn_name,
+            timeout=6.0,
+        )
+
+        logger.info(
+            f"evaluate sample '{sample.uuid}' from '{sample.source}', "
+            f"language: '{sample.lang}', kwargs: {sample.kwargs}, "
+            f"status: {ok}, msg: '{msg}'"
+        )
         return BasicResponse(status=ok, msg=msg)
     else:
         logger.error(f"not supported data source: {sample.source}")
-
         return BasicResponse(
             status=False, msg=f"not supported data source: {sample.source}"
         )
