@@ -89,13 +89,17 @@ async def evaluate(sample: Sample):
             return BasicResponse(
                 status=False, msg=f"not supported language: {sample.lang}"
             )
-        ok, msg = await exec_py_test(
-            code=sample.code,
-            inputs=sample.test.inputs,
-            expect_outputs=sample.test.outputs,
-            fn_name=sample.test.fn_name,
-            timeout=6.0,
-        )
+
+        if sample.test is None:
+            ok, msg = await exec_py_code(code=sample.code, timeout=3.0)
+        else:
+            ok, msg = await exec_py_test(
+                code=sample.code,
+                inputs=sample.test.inputs,
+                expect_outputs=sample.test.outputs,
+                fn_name=sample.test.fn_name,
+                timeout=6.0 + len(sample.test.inputs) * 2.0,  # dynamic timeout
+            )
 
         logger.info(
             f"evaluate sample '{sample.uuid}' from '{sample.source}', "
