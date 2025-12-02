@@ -6,8 +6,10 @@ import sys
 from decimal import Decimal
 from io import StringIO
 from types import ModuleType
+from typing import Callable
 from unittest.mock import mock_open, patch
 
+from .exec_py_code import reliability_guard
 from .utils import kill_proc
 
 
@@ -17,11 +19,13 @@ async def execute_test(
     expect_outputs: list[str],
     fn_name: str | None = None,
     timeout: float = 3.0,
+    memory_limit: int | None = None,
 ) -> tuple[bool, str]:
     ctx = multiprocessing.get_context("spawn")
     q = ctx.SimpleQueue()
     p = ctx.Process(
-        target=_subprocess_target, args=(q, code, inputs, expect_outputs, fn_name)
+        target=_subprocess_target,
+        args=(q, code, inputs, expect_outputs, fn_name, memory_limit),
     )
     p.start()
     try:
@@ -49,19 +53,29 @@ def _subprocess_target(
     inputs: list[str],
     expect_outputs: list[str],
     fn_name: str | None,
+    memory_limit: int | None,
 ):
     try:
-        ok, msg = _unsafe_execute(code, inputs, expect_outputs, fn_name)
+        ok, msg = _unsafe_execute(code, inputs, expect_outputs, fn_name, memory_limit)
         q.put((ok, msg))
     except Exception as e:
         q.put((False, f"failed: [{type(e).__name__}] {e}"))
 
 
 def _unsafe_execute(
-    code: str, inputs: list[str], expect_outputs: list[str], fn_name: str | None
+    code: str,
+    inputs: list[str],
+    expect_outputs: list[str],
+    fn_name: str | None,
+    memory_limit: int | None,
 ) -> tuple[bool, str]:
     if len(inputs) != len(expect_outputs):
         return False, "failed: number of inputs and outputs mismatch"
+
+    # Disable functionalities that can make destructive changes to the test.
+    # memory_limit is in MB, convert to bytes
+    limit_bytes = int(memory_limit * 1024 * 1024) if memory_limit else None
+    reliability_guard(maximum_memory_bytes=limit_bytes)
 
     if fn_name is not None:
         code_to_compile = import_string + "\n\n" + code
@@ -92,7 +106,7 @@ def _unsafe_execute(
 
 
 def _unsafe_execute_fn_call(
-    fn: callable, single_input: str, expect_output: str
+    fn: Callable, single_input: str, expect_output: str
 ) -> tuple[bool, str]:
     try:
         args = [json.loads(line) for line in single_input.split("\n")]
@@ -112,7 +126,7 @@ def _unsafe_execute_fn_call(
 
 
 def _unsafe_execute_stdio(
-    method: callable, single_input: str, expect_output: str
+    method: Callable, single_input: str, expect_output: str
 ) -> tuple[bool, str]:
     with Capturing() as captured_output:
         try:

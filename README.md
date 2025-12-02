@@ -69,11 +69,20 @@ POST /evaluations
 - lang: python | javascript | typescript
 - code: 代码字符串
 - test: LiveCodeBench 专用测试描述（含 fn_name / inputs / outputs）
+- timeout: float (可选，单位秒，默认值见下文)
+- memory_limit: int (可选，单位 MB，默认 1024)
 
-示例 HumanEval (Python)：
+示例 HumanEval (Python) - 自定义超时与内存：
 
 ```json
-{ "uuid":"h1","source":"human-eval","lang":"python","code":"print(1+2)" }
+{ 
+  "uuid":"h1",
+  "source":"human-eval",
+  "lang":"python",
+  "code":"print(1+2)",
+  "timeout": 5.0,
+  "memory_limit": 512
+}
 ```
 
 示例 LiveCodeBench：
@@ -101,14 +110,25 @@ POST /evaluations
 ```sh
 curl -X POST http://localhost:11451/evaluations \
   -H 'Content-Type: application/json' \
-  -d '{"uuid":"demo","source":"human-eval","lang":"python","code":"print(42)"}'
+  -d '{"uuid":"demo","source":"human-eval","lang":"python","code":"print(42)","memory_limit":1024}'
 ```
 
-## 超时
+## 资源限制与默认值
+
+### 超时 (Timeout)
+
+若请求中未指定 `timeout`，将使用以下默认值：
 
 - python/js: 3s
 - typescript: 5s
 - livecodebench: 6s + 2s * 用例数
+
+### 内存 (Memory Limit)
+
+若请求中未指定 memory_limit，默认值为 1024 MB。
+
+Python: 使用 `resource.setrlimit` 限制进程地址空间。
+Node.js (JS/TS): 使用 `--max-old-space-size` 限制 V8 堆内存。
 
 ## 目录
 

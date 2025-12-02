@@ -55,6 +55,8 @@ class Sample(BaseModel):
     code: str
     test: LiveCodeBenchTest | None = None
     lang: str = "python"
+    timeout: float | None = None
+    memory_limit: int = 1024  # MB
     kwargs: dict[str, Any] | None = None
 
 
@@ -70,15 +72,18 @@ async def evaluate(sample: Sample):
             "typescript": (exec_ts, 5.0),
         }
         if sample.lang in CODE_EXECUTOR_MAP:
-            fn, timeout = CODE_EXECUTOR_MAP[sample.lang]
-            ok, msg = await fn(code=sample.code, timeout=timeout)
+            fn, default_timeout = CODE_EXECUTOR_MAP[sample.lang]
+            timeout = sample.timeout if sample.timeout is not None else default_timeout
+            ok, msg = await fn(
+                code=sample.code, timeout=timeout, memory_limit=sample.memory_limit
+            )
         else:
             ok, msg = False, f"not supported language: {sample.lang}"
 
         logger.info(
             f"evaluate sample '{sample.uuid}' from '{sample.source}', "
-            f"language: {sample.lang}, kwargs: {sample.kwargs}, "
-            f"status: {ok}, msg: {msg}"
+            f"language: {sample.lang}, timeout: {timeout}, memory_limit: {sample.memory_limit}, "
+            f"kwargs: {sample.kwargs}, status: {ok}, msg: {msg}"
         )
         return BasicResponse(status=ok, msg=msg)
     elif sample.source == "livecodebench":
@@ -91,20 +96,26 @@ async def evaluate(sample: Sample):
             )
 
         if sample.test is None:
-            ok, msg = await exec_py_code(code=sample.code, timeout=3.0)
+            timeout = sample.timeout if sample.timeout is not None else 3.0
+            ok, msg = await exec_py_code(
+                code=sample.code, timeout=timeout, memory_limit=sample.memory_limit
+            )
         else:
+            default_timeout = 6.0 + len(sample.test.inputs) * 2.0
+            timeout = sample.timeout if sample.timeout is not None else default_timeout
             ok, msg = await exec_py_test(
                 code=sample.code,
                 inputs=sample.test.inputs,
                 expect_outputs=sample.test.outputs,
                 fn_name=sample.test.fn_name,
-                timeout=6.0 + len(sample.test.inputs) * 2.0,  # dynamic timeout
+                timeout=timeout,
+                memory_limit=sample.memory_limit,
             )
 
         logger.info(
             f"evaluate sample '{sample.uuid}' from '{sample.source}', "
-            f"language: '{sample.lang}', kwargs: {sample.kwargs}, "
-            f"status: {ok}, msg: '{msg}'"
+            f"language: {sample.lang}, timeout: {timeout}, memory_limit: {sample.memory_limit}, "
+            f"kwargs: {sample.kwargs}, status: {ok}, msg: {msg}"
         )
         return BasicResponse(status=ok, msg=msg)
     else:

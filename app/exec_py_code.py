@@ -12,10 +12,12 @@ from loguru import logger
 from .utils import kill_proc
 
 
-async def execute_code(code: str, timeout: float = 3.0) -> tuple[bool, str]:
+async def execute_code(
+    code: str, timeout: float = 3.0, memory_limit: int | None = None
+) -> tuple[bool, str]:
     ctx = multiprocessing.get_context("spawn")
     q = ctx.SimpleQueue()
-    p = ctx.Process(target=_subprocess_target, args=(q, code))
+    p = ctx.Process(target=_subprocess_target, args=(q, code, memory_limit))
     p.start()
     try:
         ok, msg = await asyncio.wait_for(asyncio.to_thread(q.get), timeout=timeout)
@@ -36,16 +38,16 @@ async def execute_code(code: str, timeout: float = 3.0) -> tuple[bool, str]:
     return False, f"failed: {reason}"
 
 
-def _subprocess_target(q: multiprocessing.Queue, code: str):
+def _subprocess_target(q: multiprocessing.Queue, code: str, memory_limit: int | None):
     try:
-        ok, msg = _unsafe_execute(code)
+        ok, msg = _unsafe_execute(code, memory_limit)
         q.put((ok, msg))
     except Exception as e:
         q.put((False, f"failed: [{type(e).__name__}] {e}"))
 
 
 # adapted from https://github.com/openai/human-eval/blob/6d43fb980f9fee3c892a914eda09951f772ad10d/human_eval/execution.py
-def _unsafe_execute(code: str) -> tuple[bool, str]:
+def _unsafe_execute(code: str, memory_limit: int | None) -> tuple[bool, str]:
     with create_tempdir():
         # These system calls are needed when cleaning up tempdir.
         import os
@@ -56,7 +58,9 @@ def _unsafe_execute(code: str) -> tuple[bool, str]:
         chdir = os.chdir
 
         # Disable functionalities that can make destructive changes to the test.
-        reliability_guard()
+        # Convert MB to bytes
+        limit_bytes = int(memory_limit * 1024 * 1024) if memory_limit else None
+        reliability_guard(maximum_memory_bytes=limit_bytes)
 
         try:
             exec_globals = {}
@@ -150,16 +154,21 @@ def reliability_guard(maximum_memory_bytes: int | None = None):
     if maximum_memory_bytes is not None:
         import resource
 
-        resource.setrlimit(
-            resource.RLIMIT_AS, (maximum_memory_bytes, maximum_memory_bytes)
-        )
-        resource.setrlimit(
-            resource.RLIMIT_DATA, (maximum_memory_bytes, maximum_memory_bytes)
-        )
+        def _safe_setrlimit(res, limit):
+            try:
+                _, hard = resource.getrlimit(res)
+                # If there is a hard limit, we cannot exceed it
+                if hard != resource.RLIM_INFINITY:
+                    limit = min(limit, hard)
+                resource.setrlimit(res, (limit, limit))
+            except (ValueError, OSError):
+                pass
+
+        _safe_setrlimit(resource.RLIMIT_AS, maximum_memory_bytes)
+        _safe_setrlimit(resource.RLIMIT_DATA, maximum_memory_bytes)
+
         if not platform.uname().system == "Darwin":
-            resource.setrlimit(
-                resource.RLIMIT_STACK, (maximum_memory_bytes, maximum_memory_bytes)
-            )
+            _safe_setrlimit(resource.RLIMIT_STACK, maximum_memory_bytes)
 
     def _disabled(name: str):
         def _f(*_a, **_k):

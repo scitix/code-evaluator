@@ -3,7 +3,9 @@ import os
 import tempfile
 
 
-async def execute_code(code: str, timeout: float) -> tuple[bool, str]:
+async def execute_code(
+    code: str, timeout: float, memory_limit: int | None = None
+) -> tuple[bool, str]:
     file_path = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -14,11 +16,18 @@ async def execute_code(code: str, timeout: float) -> tuple[bool, str]:
             tmp_f.flush()
 
             cmd = ["node", file_path]
+
+            env = os.environ.copy()
+            if memory_limit:
+                # memory_limit is in MB
+                env["NODE_OPTIONS"] = f"--max-old-space-size={memory_limit}"
+
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=env,
             )
 
             try:
