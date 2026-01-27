@@ -62,7 +62,7 @@ class Sample(BaseModel):
 
 @app.post("/evaluations")
 async def evaluate(sample: Sample):
-    if sample.source == "human-eval":
+    if sample.source in {"human-eval", "mbpp"}:
         # 'human-eval' directly use the code
         logger.debug(f"code to exec:\n{sample.code}")
 
