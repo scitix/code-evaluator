@@ -34,7 +34,7 @@ async def execute_code(
         try:
             q.close()
         except Exception:
-            pass
+            logger.debug("failed to close multiprocessing queue")
     return False, f"failed: {reason}"
 
 
@@ -119,7 +119,7 @@ class WriteOnlyStringIO(io.StringIO):
         return False
 
 
-class redirect_stdin(contextlib._RedirectStream):  # type: ignore
+class redirect_stdin(contextlib._RedirectStream):
     _stream = "stdin"
 
 
@@ -242,4 +242,4 @@ def reliability_guard(maximum_memory_bytes: int | None = None):
         "tkinter",
     ]
     for _m in _sys_block:
-        sys.modules[_m] = None
+        sys.modules[_m] = None  # type: ignore[assignment]

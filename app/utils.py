@@ -1,9 +1,11 @@
-import multiprocessing
+from multiprocessing import process
 import os
 import signal
 
+from loguru import logger
 
-def kill_proc(p: multiprocessing.Process):
+
+def kill_proc(p: process.BaseProcess):
     if not p:
         return
     if p.is_alive():
@@ -11,11 +13,12 @@ def kill_proc(p: multiprocessing.Process):
         p.join(0.1)
     if p.is_alive():
         try:
-            os.kill(p.pid, signal.SIGKILL)
+            if p.pid is not None:
+                os.kill(p.pid, signal.SIGKILL)
         except Exception:
-            pass
+            logger.debug(f"failed to kill subprocess: {p.pid}")
         p.join(0.1)
     try:
         p.close()
     except Exception:
-        pass
+        logger.debug(f"failed to close subprocess: {p.pid}")
