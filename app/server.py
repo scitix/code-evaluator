@@ -1,7 +1,7 @@
 import atexit
 import os
 import sys
-from typing import Any
+from typing import Any, Generic, TypeVar
 
 from fastapi import FastAPI
 from loguru import logger
@@ -33,13 +33,25 @@ def exit_handler():
 app = FastAPI()
 
 
-class BasicResponse(BaseModel):
+# Generic type for response data
+T = TypeVar("T")
+
+
+class BasicResponse(BaseModel, Generic[T]):
     status: bool
     msg: str
+    data: T | None = None
+
+
+class ResourceMetrics(BaseModel):
+    avg_cpu_percent: float
+    peak_cpu_percent: float
+    avg_memory_mb: float
+    peak_memory_mb: float
 
 
 @app.get("/health")
-async def check_health():
+async def check_health() -> BasicResponse[None]:
     return BasicResponse(status=True, msg="healthy")
 
 
@@ -61,7 +73,7 @@ class Sample(BaseModel):
 
 
 @app.post("/evaluations")
-async def evaluate(sample: Sample):
+async def evaluate(sample: Sample) -> BasicResponse[ResourceMetrics]:
     if sample.source in {"human-eval", "mbpp"}:
         # 'human-eval' directly use the code
         logger.debug(f"code to exec:\n{sample.code}")
@@ -74,36 +86,54 @@ async def evaluate(sample: Sample):
         if sample.lang in CODE_EXECUTOR_MAP:
             fn, default_timeout = CODE_EXECUTOR_MAP[sample.lang]
             timeout = sample.timeout if sample.timeout is not None else default_timeout
-            ok, msg = await fn(
+            ok, msg, stats = await fn(
                 code=sample.code, timeout=timeout, memory_limit=sample.memory_limit
             )
         else:
             ok, msg = False, f"not supported language: {sample.lang}"
+            stats = None
 
         logger.info(
             f"evaluate sample '{sample.uuid}' from '{sample.source}', "
             f"language: {sample.lang}, timeout: {timeout}, memory_limit: {sample.memory_limit}, "
-            f"kwargs: {sample.kwargs}, status: {ok}, msg: {msg}"
+            f"kwargs: {sample.kwargs}, status: {ok}, msg: {msg}, "
+            f"avg_cpu: {stats.cpu_percent if stats else 0:.2f}%, "
+            f"peak_cpu: {stats.peak_cpu_percent if stats else 0:.2f}%, "
+            f"avg_memory: {stats.memory_mb if stats else 0:.2f}MB, "
+            f"peak_memory: {stats.peak_memory_mb if stats else 0:.2f}MB"
         )
-        return BasicResponse(status=ok, msg=msg)
+        return BasicResponse(
+            status=ok,
+            msg=msg,
+            data=(
+                ResourceMetrics(
+                    avg_cpu_percent=stats.cpu_percent,
+                    peak_cpu_percent=stats.peak_cpu_percent,
+                    avg_memory_mb=stats.memory_mb,
+                    peak_memory_mb=stats.peak_memory_mb,
+                )
+                if stats
+                else None
+            ),
+        )
     elif sample.source == "livecodebench":
         # 'livecodebench' use tests to eval the code
         logger.debug(f"code to exec:\n{sample.code}")
 
         if sample.lang != "python":
             return BasicResponse(
-                status=False, msg=f"not supported language: {sample.lang}"
+                status=False, msg=f"not supported language: {sample.lang}", data=None
             )
 
         if sample.test is None:
             timeout = sample.timeout if sample.timeout is not None else 3.0
-            ok, msg = await exec_py_code(
+            ok, msg, stats = await exec_py_code(
                 code=sample.code, timeout=timeout, memory_limit=sample.memory_limit
             )
         else:
             default_timeout = 6.0 + len(sample.test.inputs) * 2.0
             timeout = sample.timeout if sample.timeout is not None else default_timeout
-            ok, msg = await exec_py_test(
+            ok, msg, stats = await exec_py_test(
                 code=sample.code,
                 inputs=sample.test.inputs,
                 expect_outputs=sample.test.outputs,
@@ -115,11 +145,24 @@ async def evaluate(sample: Sample):
         logger.info(
             f"evaluate sample '{sample.uuid}' from '{sample.source}', "
             f"language: {sample.lang}, timeout: {timeout}, memory_limit: {sample.memory_limit}, "
-            f"kwargs: {sample.kwargs}, status: {ok}, msg: {msg}"
+            f"kwargs: {sample.kwargs}, status: {ok}, msg: {msg}, "
+            f"avg_cpu: {stats.cpu_percent:.2f}%, "
+            f"peak_cpu: {stats.peak_cpu_percent:.2f}%, "
+            f"avg_memory: {stats.memory_mb:.2f}MB, "
+            f"peak_memory: {stats.peak_memory_mb:.2f}MB"
         )
-        return BasicResponse(status=ok, msg=msg)
+        return BasicResponse(
+            status=ok,
+            msg=msg,
+            data=ResourceMetrics(
+                avg_cpu_percent=stats.cpu_percent,
+                peak_cpu_percent=stats.peak_cpu_percent,
+                avg_memory_mb=stats.memory_mb,
+                peak_memory_mb=stats.peak_memory_mb,
+            ),
+        )
     else:
         logger.error(f"not supported data source: {sample.source}")
         return BasicResponse(
-            status=False, msg=f"not supported data source: {sample.source}"
+            status=False, msg=f"not supported data source: {sample.source}", data=None
         )

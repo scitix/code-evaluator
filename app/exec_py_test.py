@@ -9,7 +9,10 @@ from types import ModuleType
 from typing import Callable
 from unittest.mock import mock_open, patch
 
+from loguru import logger
+
 from .exec_py_code import reliability_guard
+from .resource_monitor import ResourceStats, monitor_process_resources
 from .utils import kill_proc
 
 
@@ -20,7 +23,7 @@ async def execute_test(
     fn_name: str | None = None,
     timeout: float = 3.0,
     memory_limit: int | None = None,
-) -> tuple[bool, str]:
+) -> tuple[bool, str, ResourceStats]:
     ctx = multiprocessing.get_context("spawn")
     q = ctx.SimpleQueue()
     p = ctx.Process(
@@ -28,9 +31,19 @@ async def execute_test(
         args=(q, code, inputs, expect_outputs, fn_name, memory_limit),
     )
     p.start()
+
+    # Start resource monitoring
+    if p.pid is not None:
+        stats, stop_event = await monitor_process_resources(p.pid)
+    else:
+        logger.warning("Process started but pid is None, skipping resource monitoring")
+        stats = ResourceStats()
+        stop_event = asyncio.Event()
+        stop_event.set()  # Already "stopped" since we never started
+
     try:
         ok, msg = await asyncio.wait_for(asyncio.to_thread(q.get), timeout=timeout)
-        return ok, msg
+        return ok, msg, stats
     except asyncio.TimeoutError:
         if p.is_alive():
             reason = f"subprocess timeout: {timeout}s"
@@ -39,12 +52,16 @@ async def execute_test(
     except Exception as e:
         reason = f"[{type(e).__name__}] {e}"
     finally:
+        # Stop monitoring
+        stop_event.set()
+        await asyncio.sleep(0.1)  # Give monitor time to finish
+
         kill_proc(p)
         try:
             q.close()
         except Exception:
             pass
-    return False, f"failed: {reason}"
+    return False, f"failed: {reason}", stats
 
 
 def _subprocess_target(

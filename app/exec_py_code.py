@@ -9,19 +9,30 @@ import tempfile
 
 from loguru import logger
 
+from .resource_monitor import ResourceStats, monitor_process_resources
 from .utils import kill_proc
 
 
 async def execute_code(
     code: str, timeout: float = 3.0, memory_limit: int | None = None
-) -> tuple[bool, str]:
+) -> tuple[bool, str, ResourceStats]:
     ctx = multiprocessing.get_context("spawn")
     q = ctx.SimpleQueue()
     p = ctx.Process(target=_subprocess_target, args=(q, code, memory_limit))
     p.start()
+
+    # Start resource monitoring (only if pid is available)
+    if p.pid is not None:
+        stats, stop_event = await monitor_process_resources(p.pid)
+    else:
+        logger.warning("Process started but pid is None, skipping resource monitoring")
+        stats = ResourceStats()
+        stop_event = asyncio.Event()
+        stop_event.set()  # Already "stopped" since we never started
+
     try:
         ok, msg = await asyncio.wait_for(asyncio.to_thread(q.get), timeout=timeout)
-        return ok, msg
+        return ok, msg, stats
     except asyncio.TimeoutError:
         if p.is_alive():
             reason = f"subprocess timeout: {timeout}s"
@@ -30,12 +41,16 @@ async def execute_code(
     except Exception as e:
         reason = f"[{type(e).__name__}] {e}"
     finally:
+        # Stop monitoring
+        stop_event.set()
+        await asyncio.sleep(0.1)  # Give monitor time to finish
+
         kill_proc(p)
         try:
             q.close()
         except Exception:
             logger.debug("failed to close multiprocessing queue")
-    return False, f"failed: {reason}"
+    return False, f"failed: {reason}", stats
 
 
 def _subprocess_target(q: multiprocessing.Queue, code: str, memory_limit: int | None):
